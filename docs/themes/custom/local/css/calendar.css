@@ -1,0 +1,26 @@
+/* @todo - Roll this into the theme */
+/* This was added separately for expedience on a ticket */
+.view-display-id-attachment_2 {
+  margin-top: 65px;
+}
+
+@media (max-width: 1185px) {
+  .fc-button {
+    font-size: 1.25rem;
+    padding: 0.75rem;
+  }
+
+  .fc-toolbar h2 {
+    font-size: 2rem;
+  }
+
+  .fc table {
+    font-size: 1.5rem;
+  }
+}
+
+@media (max-width: 500px) {
+  .fc-button {
+    padding: 0.5rem;
+  }
+}

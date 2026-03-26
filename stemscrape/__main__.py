@@ -39,6 +39,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable verbose (DEBUG) logging.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-scrape pages even if they already exist locally.",
+    )
     return parser.parse_args(argv)
 
 
@@ -55,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
         delay=args.delay,
         timeout=args.timeout,
+        force=args.force,
     )
     crawler.run()
     return 0 if not crawler.failed else 1

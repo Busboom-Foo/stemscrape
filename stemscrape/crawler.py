@@ -27,11 +27,34 @@ _HTML_TYPES = {"text/html", "application/xhtml+xml"}
 _CSS_TYPES = {"text/css"}
 
 
+def _to_remote_candidate(page_url: str, raw_url: str) -> str:
+    """Convert a URL found in local rewritten HTML back into a crawlable remote URL."""
+    absolute = urljoin(page_url, raw_url)
+    parsed = urlparse(absolute)
+
+    # Local rewrite emits directory pages as .../index.html; remote site often serves .../
+    if parsed.path.endswith("/index.html"):
+        new_path = parsed.path[: -len("/index.html")] or "/"
+        if new_path == "":
+            new_path = "/"
+        parsed = parsed._replace(path=new_path)
+        absolute = urlunparse(parsed)
+
+    return absolute
+
+
 def _normalize_url(url: str) -> str:
     """Strip fragment, normalize trailing slash for HTML pages."""
     parsed = urlparse(url)
+    path = parsed.path
+
+    # Drupal emits /partner-detail/<id> links on listing pages, but the
+    # publicly reachable route is /partners/partner-detail/<id>.
+    if path.startswith("/partner-detail/"):
+        path = "/partners" + path
+
     # Drop fragment (never a separate page)
-    cleaned = parsed._replace(fragment="")
+    cleaned = parsed._replace(path=path, fragment="")
     return urlunparse(cleaned)
 
 
@@ -60,11 +83,13 @@ class SDSTEMCrawler:
         timeout: int = 30,
         max_retries: int = 3,
         user_agent: str = "stemscrape/0.1 (+https://github.com/Busboom-Foo/stemscrape)",
+        force: bool = False,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.delay = delay
         self.timeout = timeout
         self.max_retries = max_retries
+        self.force = force
 
         self.session = requests.Session()
         self.session.headers["User-Agent"] = user_agent
@@ -143,6 +168,17 @@ class SDSTEMCrawler:
 
     def _process(self, url: str) -> None:
         """Download *url* and save it, rewriting links as needed."""
+        if not self.force:
+            local_path = url_to_local_path(url, self.output_dir)
+            if local_path.exists():
+                # For HTML pages: still extract links so referenced assets are discovered
+                if local_path.suffix == ".html":
+                    self._extract_links_from_local(local_path, url)
+                else:
+                    logger.debug("Skipping already-saved %s", url)
+                self.saved.append(url)
+                return
+
         try:
             resp = self._fetch(url)
         except Exception as exc:
@@ -202,3 +238,20 @@ class SDSTEMCrawler:
 
     def _save_binary(self, resp: requests.Response, local_path: Path) -> None:
         local_path.write_bytes(resp.content)
+
+    def _extract_links_from_local(self, local_path: Path, url: str) -> None:
+        """Parse an already-saved (rewritten) HTML file and enqueue any linked assets."""
+        try:
+            soup = BeautifulSoup(local_path.read_bytes(), "lxml")
+        except Exception as exc:
+            logger.debug("Could not parse local HTML %s: %s", local_path, exc)
+            return
+        for tag in soup.find_all(href=True):
+            self._enqueue(_to_remote_candidate(url, tag["href"]))
+        for tag in soup.find_all(src=True):
+            self._enqueue(_to_remote_candidate(url, tag["src"]))
+        for tag in soup.find_all(srcset=True):
+            for token in tag["srcset"].split(","):
+                parts = token.strip().split()
+                if parts:
+                    self._enqueue(_to_remote_candidate(url, parts[0]))
