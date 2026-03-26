@@ -1,0 +1,11 @@
+# Core HTTP and HTML parsing
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+
+# Sitemap parsing
+advertools>=0.13
+
+# Progress and retry
+tqdm>=4.66
+tenacity>=8.2
