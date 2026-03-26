@@ -3,6 +3,7 @@
 Mirror the [San Diego STEM Ecosystem website](https://www.sdstemecosystem.org/) as a
 static site stored in this repository and served via **GitHub Pages**.
 
+.
 ---
 
 ## How it works
