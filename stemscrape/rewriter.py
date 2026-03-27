@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlparse, urljoin, urlunparse
+from urllib.parse import urlparse, urljoin, urlunparse, parse_qs
 
 # CSS url() pattern – matches url("…"), url('…'), url(…)
 _CSS_URL_RE = re.compile(
@@ -25,6 +25,13 @@ def url_to_local_path(url: str, output_dir: Path) -> Path:
     """
     parsed = urlparse(url)
     path = parsed.path or "/"
+
+    # Paginated partner listing: /partners?page=N → partners/N/index.html
+    if path.rstrip("/") == "/partners" and parsed.query:
+        qs = parse_qs(parsed.query)
+        if "page" in qs:
+            page = qs["page"][0]
+            return output_dir / "partners" / page / "index.html"
 
     # Trailing slash or no file extension → directory index
     last_segment = path.rstrip("/").split("/")[-1] if path.rstrip("/") else ""
@@ -78,10 +85,14 @@ def rewrite_html(soup, current_url: str, output_dir: Path, base_host: str) -> No
             return raw_url
         target = url_to_local_path(absolute, output_dir)
         rel = _make_relative(target, current_dir)
-        # Re-attach query and fragment from the *original* absolute URL
+        # Re-attach query and fragment, but only if the query wasn't already
+        # consumed into the local path (e.g. /partners?page=N → partners/N/).
         parsed = urlparse(absolute)
         if parsed.query:
-            rel += "?" + parsed.query
+            url_no_query = urlunparse(parsed._replace(query="", fragment=""))
+            query_consumed = target != url_to_local_path(url_no_query, output_dir)
+            if not query_consumed:
+                rel += "?" + parsed.query
         if parsed.fragment:
             rel += "#" + parsed.fragment
         return rel

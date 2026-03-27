@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import deque
 from pathlib import Path
-from urllib.parse import urlparse, urljoin, urlunparse
+from urllib.parse import urlparse, urljoin, urlunparse, parse_qs, urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -25,6 +26,7 @@ BASE_HOST = "www.sdstemecosystem.org"
 _HTML_TYPES = {"text/html", "application/xhtml+xml"}
 # CSS content types that receive url() rewriting
 _CSS_TYPES = {"text/css"}
+_CSS_URL_RE = re.compile(r"""url\(\s*(['\"]?)([^'\"\)\s]+)\1\s*\)""", re.IGNORECASE)
 
 
 def _to_remote_candidate(page_url: str, raw_url: str) -> str:
@@ -52,6 +54,18 @@ def _normalize_url(url: str) -> str:
     # publicly reachable route is /partners/partner-detail/<id>.
     if path.startswith("/partner-detail/"):
         path = "/partners" + path
+
+    # Convert /partners?page=N to the clean path /partners/N so each page is
+    # treated as a distinct URL in the visited set and saved to its own directory.
+    if path.rstrip("/") == "/partners" and parsed.query:
+        qs = parse_qs(parsed.query)
+        if "page" in qs:
+            page = qs["page"][0]
+            remaining = {k: v for k, v in qs.items() if k != "page"}
+            new_query = urlencode(remaining, doseq=True)
+            path = f"/partners/{page}"
+            cleaned = parsed._replace(path=path, query=new_query, fragment="")
+            return urlunparse(cleaned)
 
     # Drop fragment (never a separate page)
     cleaned = parsed._replace(path=path, fragment="")
@@ -119,6 +133,11 @@ class SDSTEMCrawler:
         # Always include the homepage
         self._enqueue(BASE_URL + "/")
 
+        # Seed all paginated partner listing pages (?page=0 is the base /partners page;
+        # pages 1-25 are distinct pages the crawler would otherwise miss or overwrite).
+        for _page in range(1, 26):
+            self._enqueue(f"{BASE_URL}/partners?page={_page}")
+
         total_estimate = max(len(sitemap_urls), 1)
         with tqdm(desc="Scraping", unit="page", dynamic_ncols=True) as pbar:
             while self._queue:
@@ -171,16 +190,27 @@ class SDSTEMCrawler:
         if not self.force:
             local_path = url_to_local_path(url, self.output_dir)
             if local_path.exists():
-                # For HTML pages: still extract links so referenced assets are discovered
+                # For HTML/CSS files: still extract links so referenced assets are discovered.
                 if local_path.suffix == ".html":
                     self._extract_links_from_local(local_path, url)
+                elif local_path.suffix == ".css":
+                    self._extract_assets_from_local_css(local_path, url)
                 else:
                     logger.debug("Skipping already-saved %s", url)
                 self.saved.append(url)
                 return
 
+        # Clean partner-page paths (/partners/N) must be fetched as query URLs
+        fetch_url = url
+        _parsed_url = urlparse(url)
+        _m = re.match(r"^/partners/(\d+)$", _parsed_url.path)
+        if _m:
+            fetch_url = urlunparse(
+                _parsed_url._replace(path="/partners", query=f"page={_m.group(1)}")
+            )
+
         try:
-            resp = self._fetch(url)
+            resp = self._fetch(fetch_url)
         except Exception as exc:
             logger.error("Fetch failed %s: %s", url, exc)
             self.failed.append(url)
@@ -191,11 +221,18 @@ class SDSTEMCrawler:
             self.failed.append(url)
             return
 
+        requested_local_path = url_to_local_path(url, self.output_dir)
+
         # Use the final URL after any redirects
         final_url = resp.url
         content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
 
-        local_path = url_to_local_path(final_url, self.output_dir)
+        # Keep non-HTML assets at the originally requested path so rewritten links
+        # continue to resolve even if the origin redirects the asset URL.
+        if content_type in _HTML_TYPES:
+            local_path = url_to_local_path(final_url, self.output_dir)
+        else:
+            local_path = requested_local_path
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
         if content_type in _HTML_TYPES:
@@ -233,6 +270,8 @@ class SDSTEMCrawler:
         self, resp: requests.Response, url: str, local_path: Path
     ) -> None:
         css_text = resp.text
+        for match in _CSS_URL_RE.finditer(css_text):
+            self._enqueue(urljoin(url, match.group(2)))
         css_text = rewrite_css(css_text, url, self.output_dir, BASE_HOST)
         local_path.write_text(css_text, encoding="utf-8")
 
@@ -255,3 +294,13 @@ class SDSTEMCrawler:
                 parts = token.strip().split()
                 if parts:
                     self._enqueue(_to_remote_candidate(url, parts[0]))
+
+    def _extract_assets_from_local_css(self, local_path: Path, url: str) -> None:
+        """Parse an already-saved CSS file and enqueue any referenced assets."""
+        try:
+            css_text = local_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:
+            logger.debug("Could not parse local CSS %s: %s", local_path, exc)
+            return
+        for match in _CSS_URL_RE.finditer(css_text):
+            self._enqueue(_to_remote_candidate(url, match.group(2)))
