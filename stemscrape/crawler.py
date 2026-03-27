@@ -55,15 +55,17 @@ def _normalize_url(url: str) -> str:
     if path.startswith("/partner-detail/"):
         path = "/partners" + path
 
-    # Convert /partners?page=N to the clean path /partners/N so each page is
+    # Convert /<section>?page=N to the clean path /<section>/N so each page is
     # treated as a distinct URL in the visited set and saved to its own directory.
-    if path.rstrip("/") == "/partners" and parsed.query:
+    _PAGINATED_SECTIONS = {"/partners", "/references", "/stem-news"}
+    if path.rstrip("/") in _PAGINATED_SECTIONS and parsed.query:
         qs = parse_qs(parsed.query)
         if "page" in qs:
             page = qs["page"][0]
+            section = path.rstrip("/")
             remaining = {k: v for k, v in qs.items() if k != "page"}
             new_query = urlencode(remaining, doseq=True)
-            path = f"/partners/{page}"
+            path = f"{section}/{page}"
             cleaned = parsed._replace(path=path, query=new_query, fragment="")
             return urlunparse(cleaned)
 
@@ -133,10 +135,14 @@ class SDSTEMCrawler:
         # Always include the homepage
         self._enqueue(BASE_URL + "/")
 
-        # Seed all paginated partner listing pages (?page=0 is the base /partners page;
-        # pages 1-25 are distinct pages the crawler would otherwise miss or overwrite).
+        # Seed all paginated listing pages (?page=0 is the base page;
+        # subsequent pages are distinct and must be explicitly enqueued).
         for _page in range(1, 26):
             self._enqueue(f"{BASE_URL}/partners?page={_page}")
+        for _page in range(1, 4):
+            self._enqueue(f"{BASE_URL}/references?page={_page}")
+        for _page in range(1, 3):
+            self._enqueue(f"{BASE_URL}/stem-news?page={_page}")
 
         total_estimate = max(len(sitemap_urls), 1)
         with tqdm(desc="Scraping", unit="page", dynamic_ncols=True) as pbar:
@@ -200,13 +206,14 @@ class SDSTEMCrawler:
                 self.saved.append(url)
                 return
 
-        # Clean partner-page paths (/partners/N) must be fetched as query URLs
+        # Clean paginated paths (/<section>/N) must be fetched as query URLs
         fetch_url = url
         _parsed_url = urlparse(url)
-        _m = re.match(r"^/partners/(\d+)$", _parsed_url.path)
+        _m = re.match(r"^/(partners|references|stem-news)/(\d+)$", _parsed_url.path)
         if _m:
+            section, page = _m.group(1), _m.group(2)
             fetch_url = urlunparse(
-                _parsed_url._replace(path="/partners", query=f"page={_m.group(1)}")
+                _parsed_url._replace(path=f"/{section}", query=f"page={page}")
             )
 
         try:

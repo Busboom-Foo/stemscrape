@@ -26,12 +26,14 @@ def url_to_local_path(url: str, output_dir: Path) -> Path:
     parsed = urlparse(url)
     path = parsed.path or "/"
 
-    # Paginated partner listing: /partners?page=N → partners/N/index.html
-    if path.rstrip("/") == "/partners" and parsed.query:
+    # Paginated listing pages: /<section>?page=N → <section>/N/index.html
+    _PAGINATED_SECTIONS = {"/partners", "/references", "/stem-news"}
+    if path.rstrip("/") in _PAGINATED_SECTIONS and parsed.query:
         qs = parse_qs(parsed.query)
         if "page" in qs:
             page = qs["page"][0]
-            return output_dir / "partners" / page / "index.html"
+            section = path.strip("/")
+            return output_dir / section / page / "index.html"
 
     # Trailing slash or no file extension → directory index
     last_segment = path.rstrip("/").split("/")[-1] if path.rstrip("/") else ""
